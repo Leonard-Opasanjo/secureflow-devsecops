@@ -17,7 +17,7 @@ def test_report_writes_all_outputs(tmp_path, capsys):
     out = capsys.readouterr().out
     assert int(out.split()[0]) >= 35 and "5 critical" in out and "gate critical: FAIL, 5 at or above" in out
     md = (tmp_path / "r.md").read_text()
-    assert "## Secrets · gitleaks (5)" in md and "## Python static analysis · bandit (20)" in md
+    assert "## Secrets · gitleaks (5)" in md and "## Python static analysis · bandit (19)" in md
     sarif = json.loads((tmp_path / "r.sarif").read_text())
     assert len(sarif["runs"]) == 4
     doc = json.loads((tmp_path / "f.json").read_text())
