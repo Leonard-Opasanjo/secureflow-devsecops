@@ -9,7 +9,10 @@ SRC="$(cd "${1:-.}" && pwd)"
 FAIL_ON="${SECUREFLOW_FAIL_ON:-high}"
 SEMGREP_CONFIG="${SECUREFLOW_SEMGREP_CONFIG:-p/ci p/security-audit}"
 if [ -n "${SECUREFLOW_OUT:-}" ]; then OUT="$(mkdir -p "$SECUREFLOW_OUT" && cd "$SECUREFLOW_OUT" && pwd)"
-else OUT="$SRC/.secureflow"; rm -rf "$OUT"; mkdir -p "$OUT"; fi
+else
+  OUT="$SRC/.secureflow"; rm -rf "$OUT" 2>/dev/null || true
+  mkdir -p "$OUT" 2>/dev/null || { OUT="$(mktemp -d)"; echo "note: $SRC is not writable by $(id -un); writing to $OUT"; }
+fi
 cd "$SRC"   # scan with relative paths so findings and SARIF locations are repository-relative
 git config --global --add safe.directory "$SRC" >/dev/null 2>&1 || true
 EXCLUDE="./.git,./.venv,./node_modules,./.secureflow,./tests,./test,*/tests/*,*/test/*"

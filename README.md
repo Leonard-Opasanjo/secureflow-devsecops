@@ -24,6 +24,7 @@ real findings.
 
 ## Contents
 
+- [See it running](#see-it-running)
 - [Purpose](#purpose)
 - [Objectives](#objectives)
 - [Use it in your repository](#use-it-in-your-repository)
@@ -40,6 +41,28 @@ real findings.
 - [Roadmap](#roadmap)
 - [About this project](#about-this-project)
 - [Licence](#licence)
+
+## See it running
+
+[Pull request #1](https://github.com/Leonard-Opasanjo/secureflow-devsecops/pull/1) is kept open on purpose: it
+changes one line of the fixed sample to skip TLS certificate verification, the kind of "temporary" shortcut that
+ships all the time. SecureFlow reacts in four places.
+
+Code scanning annotates the exact line in the diff, with the finding from each scanner that caught it:
+
+![Pull request diff annotated by code scanning with the Bandit and Semgrep findings on the changed line](docs/pr-annotations.png)
+
+The report lands as a comment on the pull request and is updated in place on every push:
+
+![The SecureFlow report posted as a pull request comment](docs/pr-comment.png)
+
+The gate on the fixed sample fails the check, while the reporting-only run on the whole repository passes:
+
+![Pull request checks: pipeline passes, gate-fixed-app fails](docs/pr-checks.png)
+
+And the same report is the job summary of every run, next to the artifact with the SARIF and JSON:
+
+![Actions run summary showing the SecureFlow report](docs/run-summary.png)
 
 ## Purpose
 
@@ -204,8 +227,10 @@ the job fails; the report has already been published. Set `fail-on: none` to rep
 
 ## Run it locally or in Docker
 
-The container holds all four scanners and the reporter, runs as an unprivileged user, and writes its output to
-`.secureflow/` inside the mounted directory:
+The container holds all four scanners and the reporter, runs as an unprivileged user (uid 1000), and writes its
+output to `.secureflow/` inside the mounted directory. If that directory is not writable by uid 1000 (a CI
+checkout owned by another user, or a read-only mount) the report goes to a temporary directory inside the
+container instead and the path is printed; the gate result is the same either way.
 
 ```bash
 docker build -t secureflow .
