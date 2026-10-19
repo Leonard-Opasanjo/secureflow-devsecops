@@ -90,7 +90,7 @@ def fetch():
     parsed = urlparse(url)
     if parsed.scheme != "https" or parsed.hostname not in ALLOWED_HOSTS:  # no SSRF, HTTPS only
         abort(400)
-    response = requests.get(url, timeout=5)  # certificate verification stays on
+    response = requests.get(url, timeout=5, verify=False)  # temporary: staging uses a self-signed cert
     return response.text
 
 
