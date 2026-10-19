@@ -56,13 +56,13 @@ The report lands as a comment on the pull request and is updated in place on eve
 
 ![The SecureFlow report posted as a pull request comment](docs/pr-comment.png)
 
-The gate on the fixed sample fails the check, while the reporting-only run on the whole repository passes:
+The gate on the fixed sample fails its check, as do the container run and the test suite, which both hold the
+fixed sample to the same standard. The reporting-only run on the whole repository passes:
 
-![Pull request checks: pipeline passes, gate-fixed-app fails](docs/pr-checks.png)
+![Pull request checks: pipeline passes; gate-fixed-app, docker and the tests fail](docs/pr-checks.png)
 
-And the same report is the job summary of every run, next to the artifact with the SARIF and JSON:
-
-![Actions run summary showing the SecureFlow report](docs/run-summary.png)
+The same report is also written to the job summary of every run (visible to anyone signed in with access to
+the Actions tab), and the run's artifact holds the Markdown, the SARIF and the findings JSON.
 
 ## Purpose
 
