@@ -39,7 +39,9 @@ jobs:
       - name: Bandit on the reporter itself
         run: bandit -q -c pyproject.toml -r secureflow
       - name: Dependency audit of the reporter's environment
-        run: pip-audit
+        # CVE-2026-59951 is in mcp, which semgrep pins to 1.29.0 (mcp 2.x breaks semgrep). The reporter
+        # has no dependencies and the pipeline never starts semgrep's MCP server. Re-check when semgrep moves.
+        run: pip-audit --ignore-vuln CVE-2026-59951
 
   # Dogfooding: run the reusable pipeline on this repository. The vulnerable sample is expected to
   # produce findings, so the gate is off here; the alerts land in the Security tab as the live demo.

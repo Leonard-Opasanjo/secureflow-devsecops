@@ -1,0 +1,6 @@
+# actionlint 1.7.12 predates the job.workflow_sha property, which GitHub documents
+# (https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#job-context).
+paths:
+  .github/workflows/secureflow.yml:
+    ignore:
+      - 'property "workflow_sha" is not defined in object type'
