@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "secureflow"
+version = "0.1.0"
+description = "DevSecOps pipeline: Bandit, Semgrep, Gitleaks and pip-audit merged into one report, SARIF upload and severity gate for GitHub Actions."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+authors = [{name = "Leonard Opasanjo"}]
+keywords = ["devsecops", "security", "sast", "secrets", "sarif", "github-actions", "bandit", "semgrep", "gitleaks"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security",
+    "Topic :: Software Development :: Quality Assurance",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.5", "bandit>=1.7", "pip-audit>=2.7", "semgrep>=1.90"]
+
+[project.scripts]
+secureflow = "secureflow.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Leonard-Opasanjo/secureflow-devsecops"
+Issues = "https://github.com/Leonard-Opasanjo/secureflow-devsecops/issues"
+
+[tool.setuptools.packages.find]
+include = ["secureflow*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "W"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501"]
+
+[tool.bandit]
+exclude_dirs = ["tests", "samples", ".venv"]

@@ -1,0 +1,161 @@
+# SecureFlow: reusable security pipeline. Call it from any repository:
+#
+#   jobs:
+#     security:
+#       uses: Leonard-Opasanjo/secureflow-devsecops/.github/workflows/secureflow.yml@main
+#       permissions: { contents: read, security-events: write, pull-requests: write }
+#       with: { fail-on: high }
+#
+name: SecureFlow
+
+on:
+  workflow_call:
+    inputs:
+      paths:
+        description: Space-separated directories to scan with Bandit, Semgrep and pip-audit
+        type: string
+        default: "."
+      python-version:
+        description: Python version used to run the scanners
+        type: string
+        default: "3.12"
+      fail-on:
+        description: Fail the job when any finding is at or above this severity (none, low, medium, high, critical)
+        type: string
+        default: "high"
+      semgrep-config:
+        description: Space-separated Semgrep rulesets or rule files
+        type: string
+        default: "p/ci p/security-audit"
+      scan-git-history:
+        description: Let Gitleaks scan the full git history (true) or only the working tree of `paths` (false)
+        type: boolean
+        default: true
+      upload-sarif:
+        description: Publish findings to the repository's code scanning alerts
+        type: boolean
+        default: true
+      comment-on-pr:
+        description: Post or update a report comment on pull requests
+        type: boolean
+        default: true
+
+jobs:
+  secureflow:
+    name: SecureFlow
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      pull-requests: write
+    env:
+      GITLEAKS_VERSION: "8.30.1"
+      GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+      SCAN_PATHS: ${{ inputs.paths }}
+      SEMGREP_CONFIG: ${{ inputs.semgrep-config }}
+      FAIL_ON: ${{ inputs.fail-on }}
+      SCAN_HISTORY: ${{ inputs.scan-git-history }}
+      SECUREFLOW_REF: ${{ github.job_workflow_sha || github.sha }}
+      OUT: ${{ runner.temp }}/secureflow
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: ${{ inputs.scan-git-history && 0 || 1 }}
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Install scanners and the SecureFlow reporter
+        run: |
+          python -m pip install -q -U pip setuptools
+          pip install -q bandit semgrep pip-audit \
+            "secureflow @ git+https://github.com/Leonard-Opasanjo/secureflow-devsecops.git@${SECUREFLOW_REF}"
+          mkdir -p "$OUT" "$RUNNER_TEMP/gitleaks" && cd "$RUNNER_TEMP/gitleaks"
+          curl -sSL -o gitleaks.tgz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tgz" | sha256sum -c -
+          tar xzf gitleaks.tgz gitleaks && echo "$PWD" >> "$GITHUB_PATH"
+
+      - name: Bandit (Python static analysis)
+        run: bandit -q -r $SCAN_PATHS -x "./.git,./.venv,./node_modules,./tests,./test,*/tests/*,*/test/*" -f json -o "$OUT/bandit.json" --exit-zero
+
+      - name: Semgrep (static analysis)
+        env:
+          SEMGREP_SEND_METRICS: "off"
+        run: |
+          args=""; for c in $SEMGREP_CONFIG; do args="$args --config $c"; done
+          semgrep scan $args --json --output "$OUT/semgrep.json" --metrics=off --quiet $SCAN_PATHS
+
+      - name: Gitleaks (secrets)
+        run: |
+          common="--redact --exit-code 0 --report-format json"
+          if [ "$SCAN_HISTORY" = "true" ]; then
+            gitleaks git . $common --report-path "$OUT/gitleaks.json"
+            echo "GITLEAKS_ARGS=--gitleaks $OUT/gitleaks.json" >> "$GITHUB_ENV"
+          else
+            i=0; args=""
+            for p in $SCAN_PATHS; do
+              i=$((i+1)); gitleaks dir "$p" $common --report-path "$OUT/gitleaks-$i.json"
+              args="$args --gitleaks $OUT/gitleaks-$i.json"
+            done
+            echo "GITLEAKS_ARGS=$args" >> "$GITHUB_ENV"
+          fi
+
+      - name: pip-audit (dependency vulnerabilities)
+        run: |
+          files=$(find $SCAN_PATHS -name 'requirements*.txt' -not -path '*/.git/*' -not -path '*/.venv/*' \
+                    -not -path '*/node_modules/*' | sort)
+          i=0; args=""
+          for f in $files; do
+            i=$((i+1))
+            pip-audit -r "$f" -f json -o "$OUT/pip-audit-$i.json" >/dev/null 2>&1 || true
+            test -s "$OUT/pip-audit-$i.json" || { echo "::error::pip-audit could not audit $f"; exit 1; }
+            args="$args --pip-audit $OUT/pip-audit-$i.json:$f"
+          done
+          [ -n "$files" ] || echo "no requirements files under $SCAN_PATHS"
+          echo "PIP_AUDIT_ARGS=$args" >> "$GITHUB_ENV"
+
+      - name: Build the report
+        run: |
+          secureflow report --bandit "$OUT/bandit.json" --semgrep "$OUT/semgrep.json" $GITLEAKS_ARGS $PIP_AUDIT_ARGS \
+            --markdown secureflow-report.md --sarif secureflow.sarif --json secureflow-findings.json \
+            --commit "$GITHUB_SHA" --repo "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" --paths "$SCAN_PATHS" \
+            --fail-on "$FAIL_ON"
+          cat secureflow-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: secureflow-report
+          path: |
+            secureflow-report.md
+            secureflow.sarif
+            secureflow-findings.json
+
+      - name: Publish to code scanning
+        if: inputs.upload-sarif
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        continue-on-error: true
+        with:
+          sarif_file: secureflow.sarif
+          category: secureflow
+
+      - name: Comment on the pull request
+        if: inputs.comment-on-pr && github.event_name == 'pull_request'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        continue-on-error: true
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- secureflow-report -->';
+            let body = marker + '\n' + fs.readFileSync('secureflow-report.md', 'utf8');
+            if (body.length > 60000) body = body.slice(0, 60000) + '\n\n… truncated; the full report is in the job artifact.';
+            const {owner, repo} = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, {owner, repo, issue_number});
+            const mine = comments.find(c => c.body && c.body.startsWith(marker));
+            if (mine) await github.rest.issues.updateComment({owner, repo, comment_id: mine.id, body});
+            else await github.rest.issues.createComment({owner, repo, issue_number, body});
+
+      - name: Gate
+        run: secureflow gate secureflow-findings.json --fail-on "$FAIL_ON"
