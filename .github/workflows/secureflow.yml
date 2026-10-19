@@ -80,18 +80,23 @@ jobs:
           tar xzf gitleaks.tgz gitleaks && echo "$PWD" >> "$GITHUB_PATH"
 
       - name: Bandit (Python static analysis)
-        run: bandit -q -r $SCAN_PATHS -x "./.git,./.venv,./node_modules,./tests,./test,*/tests/*,*/test/*" -f json -o "$OUT/bandit.json" --exit-zero
+        run: |
+          # shellcheck disable=SC2086  # space-separated inputs and argument lists are split on purpose
+          bandit -q -r $SCAN_PATHS -x "./.git,./.venv,./node_modules,./tests,./test,*/tests/*,*/test/*" \
+            -f json -o "$OUT/bandit.json" --exit-zero
 
       - name: Semgrep (static analysis)
         env:
           SEMGREP_SEND_METRICS: "off"
         run: |
           args=""; for c in $SEMGREP_CONFIG; do args="$args --config $c"; done
+          # shellcheck disable=SC2086  # space-separated inputs and argument lists are split on purpose
           semgrep scan $args --json --output "$OUT/semgrep.json" --metrics=off --quiet $SCAN_PATHS
 
       - name: Gitleaks (secrets)
         run: |
           common="--redact --exit-code 0 --report-format json"
+          # shellcheck disable=SC2086  # $common is an argument list, split on purpose
           if [ "$SCAN_HISTORY" = "true" ]; then
             gitleaks git . $common --report-path "$OUT/gitleaks.json"
             echo "GITLEAKS_ARGS=--gitleaks $OUT/gitleaks.json" >> "$GITHUB_ENV"
@@ -106,6 +111,7 @@ jobs:
 
       - name: pip-audit (dependency vulnerabilities)
         run: |
+          # shellcheck disable=SC2086  # space-separated inputs and argument lists are split on purpose
           files=$(find $SCAN_PATHS -name 'requirements*.txt' -not -path '*/.git/*' -not -path '*/.venv/*' \
                     -not -path '*/node_modules/*' | sort)
           i=0; args=""
@@ -120,6 +126,7 @@ jobs:
 
       - name: Build the report
         run: |
+          # shellcheck disable=SC2086  # space-separated inputs and argument lists are split on purpose
           secureflow report --bandit "$OUT/bandit.json" --semgrep "$OUT/semgrep.json" $GITLEAKS_ARGS $PIP_AUDIT_ARGS \
             --markdown secureflow-report.md --sarif secureflow.sarif --json secureflow-findings.json \
             --commit "$GITHUB_SHA" --repo "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" --paths "$SCAN_PATHS" \
