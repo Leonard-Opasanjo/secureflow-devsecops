@@ -305,7 +305,7 @@ The CI workflow has four jobs:
 | `test` (3.11, 3.12, 3.13) | lint, the test suite with all four scanners present, Bandit on the reporter, pip-audit on its environment |
 | `pipeline` | the reusable workflow runs on this repository with `fail-on: none`; its findings are the live demo in the Security tab |
 | `gate-fixed-app` | the reusable workflow on `samples/fixed-app` with `fail-on: low` must pass |
-| `docker` | the image builds and the container passes on the fixed app |
+| `docker` | actionlint on the workflow files, the image builds, and the container passes on the fixed app |
 
 ## Security of the pipeline itself
 

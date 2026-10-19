@@ -55,8 +55,8 @@ jobs:
       SEMGREP_CONFIG: ${{ inputs.semgrep-config }}
       FAIL_ON: ${{ inputs.fail-on }}
       SCAN_HISTORY: ${{ inputs.scan-git-history }}
-      SECUREFLOW_REF: ${{ github.job_workflow_sha || github.sha }}
-      OUT: ${{ runner.temp }}/secureflow
+      # job_workflow_sha is the commit of this reusable workflow in the called repository
+      SECUREFLOW_REF: ${{ github.job_workflow_sha || 'main' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -68,10 +68,11 @@ jobs:
 
       - name: Install scanners and the SecureFlow reporter
         run: |
+          echo "OUT=$RUNNER_TEMP/secureflow" >> "$GITHUB_ENV"
           python -m pip install -q -U pip setuptools
           pip install -q bandit semgrep pip-audit \
             "secureflow @ git+https://github.com/Leonard-Opasanjo/secureflow-devsecops.git@${SECUREFLOW_REF}"
-          mkdir -p "$OUT" "$RUNNER_TEMP/gitleaks" && cd "$RUNNER_TEMP/gitleaks"
+          mkdir -p "$RUNNER_TEMP/secureflow" "$RUNNER_TEMP/gitleaks" && cd "$RUNNER_TEMP/gitleaks"
           curl -sSL -o gitleaks.tgz \
             "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
           echo "${GITLEAKS_SHA256}  gitleaks.tgz" | sha256sum -c -
