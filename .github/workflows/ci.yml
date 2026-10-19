@@ -71,6 +71,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Lint the workflow files
+        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 -no-color
       - run: docker build -t secureflow .
       - name: Run the container against the fixed sample
         run: docker run --rm -v "$PWD/samples/fixed-app:/src" -e SECUREFLOW_FAIL_ON=low secureflow
