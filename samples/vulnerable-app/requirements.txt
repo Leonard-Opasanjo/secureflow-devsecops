@@ -6,5 +6,5 @@ itsdangerous==2.0.1
 click==8.0.1
 requests==2.25.1
 urllib3==1.26.4
-certifi==2021.5.30
+certifi==2026.10.18
 pyyaml==6.0.1
