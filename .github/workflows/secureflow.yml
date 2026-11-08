@@ -146,10 +146,16 @@ jobs:
             --fail-on "$FAIL_ON"
           cat secureflow-report.md >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Name the artifact
+        id: artifact
+        # Unique per call: download-artifact only sees the newest artifact of each name in a run, and a workflow
+        # that calls SecureFlow twice would otherwise hide the first report from its publish job.
+        run: echo "name=secureflow-report-$(openssl rand -hex 4)" >> "$GITHUB_OUTPUT"
+
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         id: upload
         with:
-          name: secureflow-report
+          name: ${{ steps.artifact.outputs.name }}
           path: |
             secureflow-report.md
             secureflow.sarif
