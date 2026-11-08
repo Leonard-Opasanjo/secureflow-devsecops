@@ -2,4 +2,4 @@
 # Dependabot proposes updates. Change the gate's behaviour on purpose, not because a scanner released overnight.
 bandit==1.9.4
 pip-audit==2.10.1
-semgrep==1.181.0
+semgrep==1.183.0
