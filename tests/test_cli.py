@@ -52,3 +52,19 @@ def test_errors(tmp_path, capsys):
 def test_module_entry_point():
     r = subprocess.run([sys.executable, "-m", "secureflow.cli", "--version"], capture_output=True, text=True)
     assert r.returncode == 0 and "secureflow 0." in r.stdout
+
+
+def test_report_surfaces_files_the_scanner_could_not_parse(tmp_path, capsys):
+    # Real Bandit shape: a file with a syntax error is skipped and listed under "errors", with no results.
+    bandit = tmp_path / "bandit.json"
+    bandit.write_text(json.dumps({"errors": [{"filename": "src/b.py", "reason": "syntax error while parsing AST from file"}],
+                                  "results": []}))
+    # Semgrep's partial parsing of a template is a warning: the rest of the file was scanned, so it does not count.
+    semgrep = tmp_path / "semgrep.json"
+    semgrep.write_text(json.dumps({"errors": [{"code": 3, "level": "warn", "type": ["PartialParsing", []], "path": "t.html"}],
+                                   "results": []}))
+    rc = main(["report", "--bandit", str(bandit), "--semgrep", str(semgrep),
+               "--markdown", str(tmp_path / "r.md"), "--json", str(tmp_path / "f.json")])
+    assert rc == 0 and "warning: bandit reported 1 error(s)" in capsys.readouterr().out
+    assert "**Not fully scanned:** scanner errors (bandit 1)" in (tmp_path / "r.md").read_text()
+    assert json.loads((tmp_path / "f.json").read_text())["scan_errors"] == {"bandit": 1, "semgrep": 0}

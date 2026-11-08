@@ -13,7 +13,7 @@ anything crosses the severity you choose.
 |---|---|
 | [Bandit](https://bandit.readthedocs.io/) | Python static analysis: injection, weak crypto, unsafe deserialisation, bad defaults |
 | [Semgrep](https://semgrep.dev/) | Multi-language static analysis with the `p/ci` and `p/security-audit` rulesets |
-| [Gitleaks](https://github.com/gitleaks/gitleaks) | Committed credentials, across the full git history |
+| [Gitleaks](https://github.com/gitleaks/gitleaks) | Committed credentials, across the git history of every branch and tag |
 | [pip-audit](https://github.com/pypa/pip-audit) | Known vulnerabilities in Python dependencies, including transitive ones |
 
 The repository also ships a deliberately vulnerable Flask application, its corrected twin, and a
@@ -89,9 +89,9 @@ background.
    repository that wants to stay spotless.
 5. **Proof that it works.** A vulnerable sample with planted flaws that the pipeline must report, a fixed sample
    that it must pass, and a test suite that checks both on every CI run with the real scanners.
-6. **Safe to run on untrusted pull requests.** Pinned, checksummed tool downloads, least-privilege permissions,
-   workflow inputs passed through environment variables rather than interpolated into shell, secrets redacted
-   in every output.
+6. **Safe to run on untrusted pull requests.** Pinned scanner versions and a checksummed Gitleaks download, a
+   read-only token for the job that handles the code, workflow inputs passed through environment variables
+   rather than interpolated into shell, secrets kept out of every output.
 
 ## Use it in your repository
 
@@ -117,7 +117,11 @@ jobs:
 ```
 
 That is the whole integration. Pin `@main` to a tag or a commit SHA once you are happy with it, as you would
-for any action. The scanned repository needs no Python project of its own: Bandit and pip-audit simply find
+for any action. Grant all three permissions even if you turn `upload-sarif` or `comment-on-pr` off: GitHub
+checks a called workflow's permissions before it starts. Only the publish job uses the two write scopes; the job
+that checks out and scans your code runs with `contents: read`.
+
+The scanned repository needs no Python project of its own: Bandit and pip-audit simply find
 nothing to do if there is no Python code or `requirements*.txt`, while Semgrep and Gitleaks cover every
 language.
 
@@ -126,27 +130,30 @@ raises, then switch to `high`.
 
 ## What happens on each run
 
-1. **Checkout** with full history when `scan-git-history` is on, so Gitleaks can see credentials that were
-   committed and later removed.
-2. **Install** Bandit, Semgrep and pip-audit from PyPI, the SecureFlow reporter from this repository at the
-   same commit as the workflow file, and Gitleaks from its GitHub release, verified against a pinned SHA-256.
+1. **Checkout** with full history (every branch and tag) when `scan-git-history` is on, so Gitleaks can see
+   credentials that were committed and later removed. The checkout keeps no token in `.git/config`.
+2. **Install** Bandit, Semgrep and pip-audit from PyPI at the exact versions in
+   [`constraints.txt`](constraints.txt), the SecureFlow reporter from this repository at the same commit as the
+   workflow file, and Gitleaks from its GitHub release, verified against a pinned SHA-256.
 3. **Bandit** scans the `paths` for Python issues, excluding `.git`, `.venv`, `node_modules` and `tests`/`test`
    directories (asserts and subprocess calls in tests are not vulnerabilities; Semgrep and Gitleaks still cover them).
 4. **Semgrep** scans the same paths with the configured rulesets, metrics off.
-5. **Gitleaks** scans the git history (default) or the working tree of each path, with `--redact` so no secret
-   value ever appears in logs, artifacts, comments or alerts.
-6. **pip-audit** runs once per `requirements*.txt` found under the paths, resolving the full dependency tree so
-   that transitive packages are audited too. A file that cannot be resolved fails the step loudly rather than
-   being skipped silently.
+5. **Gitleaks** scans the history of every fetched branch and tag (default) or the working tree of each path,
+   with `--redact` so no secret value ever appears in logs, artifacts, comments or alerts.
+6. **pip-audit** runs once per `requirements*.txt` found under the paths. pip resolves the full dependency tree
+   so that transitive packages are audited too, with `PIP_ONLY_BINARY=:all:`: it only reads wheels, so no
+   `setup.py` from the scanned code or a package it names ever runs. A file that cannot be resolved fails the
+   step loudly rather than being skipped silently.
 7. **Report.** The `secureflow report` command reads the four outputs, normalises and de-duplicates them, and
    writes `secureflow-report.md`, `secureflow.sarif` and `secureflow-findings.json`. The Markdown goes to the
-   job summary.
-8. **Publish.** The three files are uploaded as a job artifact; the SARIF goes to code scanning under the
-   category `secureflow`; on pull requests the Markdown is posted as a comment, replacing the previous one from
-   SecureFlow. Both publishing steps are `continue-on-error`, so a repository where code scanning is off or a
-   fork without write access still gets the report and the gate.
-9. **Gate.** `secureflow gate` exits non-zero when any finding is at or above `fail-on`, which fails the job.
-   It runs last, after everything has been published, so a failed gate never hides the report.
+   job summary, and the three files are uploaded as a job artifact.
+8. **Gate.** `secureflow gate` exits non-zero when any finding is at or above `fail-on`, which fails the
+   `SecureFlow` job.
+9. **Publish.** A second job, `Publish`, runs after the first whatever the gate decided, so a failed gate never
+   hides the report. It downloads the artifact, sends the SARIF to code scanning under `sarif-category`, and on
+   pull requests posts the Markdown as a comment, replacing the previous SecureFlow comment (only a comment
+   written by `github-actions[bot]` counts as that). Both publishing steps are `continue-on-error`, so a
+   repository where code scanning is off or a fork without write access still gets the report and the gate.
 
 ## Inputs
 
@@ -159,6 +166,10 @@ raises, then switch to `high`.
 | `scan-git-history` | `true` | Gitleaks scans all commits; `false` scans only the working tree of `paths` |
 | `upload-sarif` | `true` | Publish to code scanning |
 | `comment-on-pr` | `true` | Post or update the report comment on pull requests |
+| `sarif-category` | `secureflow` | Code scanning category. Give each call its own if a workflow calls SecureFlow more than once, or each upload closes the other's alerts |
+
+Permissions: `contents: read` for scanning, `security-events: write` for `upload-sarif`, `pull-requests: write`
+for `comment-on-pr`. Grant all three in any case (see above); with an input off, its scope is simply not used.
 
 Example with everything set:
 
@@ -173,37 +184,39 @@ Example with everything set:
 
 ## The report
 
-The report leads with the verdict, then a matrix of severity by tool, then one table per tool. An excerpt: Locations link
+The report leads with the verdict, then a matrix of severity by tool, then one table per tool. Locations link
 to the exact line at the scanned commit, rule ids link to the scanner's documentation or the OSV record, and
-every row carries a remediation where the scanner provides one.
+every row carries a remediation where the scanner provides one. This excerpt is from a real run on this
+repository (long cells shortened with …):
 
 ```markdown
 # SecureFlow security report
 
-**41 findings** · 5 critical · 18 high · 10 medium · 8 low · 0 info
-Gate `high`: **FAIL** (23 at high or above)
-commit `3f2a1c9d0e7b` · scanned `.` · 2026-10-19 13:00 UTC · tools: gitleaks, bandit, semgrep, pip-audit
+**76 findings** · 5 critical · 54 high · 10 medium · 7 low · 0 info  
+Gate `high`: **FAIL** (59 at high or above)  
+commit `b6270fa36844` · scanned `.` · 2026-11-08 15:33 UTC · tools: gitleaks, bandit, semgrep, pip-audit
 
 | Tool | Critical | High | Medium | Low | Info | Total |
 |---|---|---|---|---|---|---|
 | gitleaks | 5 | 0 | 0 | 0 | 0 | 5 |
-| bandit | 0 | 5 | 7 | 8 | 0 | 20 |
-| semgrep | 0 | 6 | 6 | 0 | 0 | 12 |
-| pip-audit | 0 | 4 | 0 | 0 | 0 | 4 |
-| **Total** | **5** | **18** | **10** | **8** | **0** | **41** |
+| bandit | 0 | 5 | 7 | 7 | 0 | 19 |
+| semgrep | 0 | 9 | 3 | 0 | 0 | 12 |
+| pip-audit | 0 | 40 | 0 | 0 | 0 | 40 |
+| **Total** | **5** | **54** | **10** | **7** | **0** | **76** |
 
 ## Secrets · gitleaks (5)
 
 | Severity | Rule | Location | Finding | Remediation |
 |---|---|---|---|---|
-| critical | github-pat | [`samples/vulnerable-app/settings.py:9`](…#L9) | Uncovered a GitHub Personal Access Token … (CWE-798) | Revoke and rotate the credential now; then remove it from history … |
+| critical | generic-api-key | [`samples/vulnerable-app/settings.py:8`](…#L8) | Detected a Generic API Key, … (CWE-798) | Revoke and rotate the credential now; … |
 ```
 
 The same content is available three ways:
 
 - `secureflow-report.md` in the job summary, the PR comment and the artifact: for people.
-- `secureflow.sarif`: SARIF 2.1.0 with one run per tool, rule metadata, `security-severity` scores so GitHub
-  shows the right severity, and stable partial fingerprints so an alert survives line shifts. This is what the
+- `secureflow.sarif`: SARIF 2.1.0 with one run per tool, rule metadata, and `security-severity` scores so
+  GitHub shows the right severity. It carries no fingerprints of its own: `upload-sarif` fingerprints each alert
+  by the content of its line, so an alert, and a dismissal, survives lines added above it. This is what the
   Security tab renders, with one alert per finding that can be dismissed, assigned and tracked.
 - `secureflow-findings.json`: every field of every finding, the counts, the configuration and the gate result.
   This is the input to `secureflow gate` and the right file for a dashboard or a ticketing integration.
@@ -215,12 +228,18 @@ Each scanner has its own idea of severity. SecureFlow maps them onto one scale:
 | Scanner | Mapping |
 |---|---|
 | Gitleaks | every leak is **critical**: the fix is rotation, and nothing else in the report matters until it is done |
-| Bandit | `HIGH` → high, `MEDIUM` → medium, `LOW` → low |
-| Semgrep | `ERROR` → high, `WARNING` → medium, `INFO` → low; a `WARNING` whose rule metadata says `impact: HIGH` is raised to high |
+| Bandit | `HIGH` → high, `MEDIUM` → medium, `LOW` → low. For hard-coded passwords (B105, B106, B107) the report keeps Bandit's title but not the quoted value |
+| Semgrep | `CRITICAL` → critical; `ERROR` and `HIGH` → high; `WARNING` and `MEDIUM` → medium; `INFO` and `LOW` → low; `INVENTORY` and `EXPERIMENT` → info; any other level → high, so a new level cannot slip under the gate. A finding below high whose rule metadata says `impact: HIGH` is raised to high |
 | pip-audit | every advisory is **high**; pip-audit's output carries no score, and a known-vulnerable dependency reachable from your code is a high by any policy |
 
-Findings are de-duplicated on `tool + rule + file + line`, so a secret present in ten commits is one finding,
-and the SARIF scores map to GitHub's bands (critical 9.5, high 8.0, medium 5.5, low 3.0).
+Findings are de-duplicated on `tool + rule + file + line`. For Gitleaks the secret's entropy, which survives
+`--redact`, is part of the key: a secret present in ten commits is one finding, while a new key committed on the
+line of an old one is a second finding, so it gets rotated too. The SARIF scores map to GitHub's bands
+(critical 9.5, high 8.0, medium 5.5, low 3.0).
+
+If Bandit skipped a file it could not parse, or Semgrep reported an error (not a partial-parsing warning), the
+report says so under the verdict ("Not fully scanned"), the CLI prints a warning and the JSON has the counts in
+`scan_errors`. A skipped file was not checked; the gate does not fail on that alone.
 
 The gate compares every finding against `fail-on`. `secureflow gate` prints the breaching findings and exits 1;
 the job fails; the report has already been published. Set `fail-on: none` to report without blocking.
@@ -242,10 +261,14 @@ cat .secureflow/report.md
 Without Docker, install the scanners and run the same script:
 
 ```bash
-pip install -e ".[dev]"            # reporter plus bandit, semgrep, pip-audit (and the test tools)
+pip install -e ".[dev]" -c constraints.txt              # reporter plus bandit, pip-audit and the test tools
+pipx install semgrep --pip-args="-c $PWD/constraints.txt"  # a tool with pinned dependencies of its own: keep it in its own venv
 # gitleaks: download the release binary for your platform and put it on PATH
 scripts/secureflow-local.sh .       # or any directory; SECUREFLOW_FAIL_ON, SECUREFLOW_SEMGREP_CONFIG, SECUREFLOW_OUT
 ```
+
+On the root of a git repository the local run scans the history for secrets; on a subdirectory it scans that
+directory's files, like `scan-git-history: false`.
 
 The reporter on its own has no dependencies beyond the standard library and can be used with scanner output
 you produced some other way:
@@ -270,9 +293,9 @@ file, a swallowed exception, the debugger bound to all interfaces, six fake cred
 `requirements.txt` pinned to versions with published advisories. `samples/fixed-app` is the same service with each
 one corrected.
 
-With the current rules and advisory databases the vulnerable app produces about 75 findings: 5 secrets, 19 from
-Bandit, 12 from Semgrep and close to 40 dependency advisories (that last number only grows as new advisories
-are published). The fixed app produces none. [docs/REMEDIATION.md](docs/REMEDIATION.md) walks through every finding: the rule that
+With the current rules and advisory databases the vulnerable app produces 76 findings: 5 secrets, 19 from
+Bandit, 12 from Semgrep and 40 dependency advisories (that last number only grows as new advisories are
+published). The fixed app produces none. [docs/REMEDIATION.md](docs/REMEDIATION.md) walks through every finding: the rule that
 fires, what an attacker does with it, the fix in the corrected app, and the CWE and OWASP references. It also
 covers one flaw the scanners miss (server-side request forgery), triage order, and how to suppress a finding
 you have reviewed.
@@ -280,7 +303,8 @@ you have reviewed.
 ## Architecture
 
 ```
-.github/workflows/secureflow.yml   the reusable workflow (workflow_call): install, scan, report, publish, gate
+.github/workflows/secureflow.yml   the reusable workflow (workflow_call): install, scan, report and gate; then publish in a second job
+constraints.txt                    exact scanner versions for the workflow, the Docker image and CI
 .github/workflows/ci.yml           this repository's CI: tests on 3.11-3.13, the pipeline on itself, the gate on the fixed app, Docker
 secureflow/
 ├── findings.py    Finding dataclass, the severity scale, SARIF level and score tables, path normalisation, fingerprints
@@ -302,17 +326,18 @@ Design decisions:
   log rather than being swallowed by a wrapper.
 - **One finding model.** Every parser maps to the same eleven fields. Adding a scanner is one parser function,
   one CLI flag, one workflow step and a fixture.
-- **Report before gate.** Uploads and comments happen before the gate step, so a red build still carries its
-  evidence.
+- **Read-only scanning, separate publishing.** The job that checks out and scans the code holds a read-only
+  token; the job with the write scopes only reads the report artifact. The publish job runs after a failed gate
+  too, so a red build still carries its evidence.
 - **SARIF per tool, one upload.** Each tool is its own SARIF run with its own rules, under one code-scanning
-  category, so alerts show which scanner raised them and are closed automatically when the next run no longer
-  reports them.
+  category (`sarif-category`), so alerts show which scanner raised them and are closed automatically when the
+  next run no longer reports them.
 
 ## Tests and continuous integration
 
 ```bash
 ruff check .
-pytest                                    # 29 tests
+pytest                                    # 42 tests
 bandit -q -c pyproject.toml -r secureflow
 pip-audit
 ```
@@ -327,7 +352,7 @@ The CI workflow has four jobs:
 
 | Job | What it proves |
 |---|---|
-| `test` (3.11, 3.12, 3.13) | lint, the test suite with all four scanners present, Bandit on the reporter, pip-audit on its environment |
+| `test` (3.11, 3.12, 3.13) | lint, the test suite with all four scanners present (Semgrep in its own pipx environment), Bandit on the reporter, pip-audit on its environment |
 | `pipeline` | the reusable workflow runs on this repository with `fail-on: none`; its findings are the live demo in the Security tab |
 | `gate-fixed-app` | the reusable workflow on `samples/fixed-app` with `fail-on: low` must pass |
 | `docker` | actionlint on the workflow files, the image builds, and the container passes on the fixed app |
@@ -339,16 +364,21 @@ its own attack surface.
 
 - **No script injection.** Workflow inputs are passed to shell steps through environment variables, never
   interpolated with `${{ }}` into `run:` blocks.
-- **Pinned, verified downloads.** Every third-party action is pinned to a commit SHA, with Dependabot proposing
-  updates. Gitleaks is fetched from its GitHub release at a fixed version and checked against a SHA-256 recorded
-  in the workflow and the Dockerfile. The reporter is installed from this repository at the commit of the
-  workflow file.
-- **Least privilege.** The job asks for `contents: read`, `security-events: write` and `pull-requests: write`
-  and nothing else. Callers grant exactly those.
-- **Secrets never leave the runner.** Gitleaks runs with `--redact`; the report, the artifact, the comment and
-  the SARIF carry the location and the rule, not the value.
-- **Untrusted code is scanned, not executed.** Bandit, Semgrep and Gitleaks read files. pip-audit resolves
-  dependencies, which means it downloads packages named in `requirements*.txt`; it does not import or run them.
+- **Pinned, verified downloads.** Every third-party action is pinned to a commit SHA, and Bandit, Semgrep and
+  pip-audit to exact versions in `constraints.txt`, with Dependabot proposing updates for both. Gitleaks is
+  fetched from its GitHub release at a fixed version and checked against a SHA-256 recorded in the workflow and
+  the Dockerfile. The reporter is installed from this repository at the commit of the workflow file. The
+  Docker base image and the actionlint image are pinned by tag only.
+- **Least privilege.** The scanning job has `contents: read` and nothing else, and its checkout keeps no token.
+  The publish job has `security-events: write` and `pull-requests: write` and never runs the repository's code.
+  Callers grant exactly those three.
+- **Secrets stay out of the outputs.** Gitleaks runs with `--redact`, and Bandit's quoted password values are cut
+  from its titles; the report, the artifact, the comment and the SARIF carry the location and the rule, not the
+  value. Finding text is escaped in the Markdown, so code quoted by a scanner cannot add HTML, links or
+  `@mentions` to the comment.
+- **Untrusted code is scanned, not executed.** Bandit, Semgrep and Gitleaks read files. pip-audit asks pip to
+  resolve the dependencies in `requirements*.txt`, which downloads packages, with `PIP_ONLY_BINARY=:all:` so
+  that pip never builds a source package (building one runs its `setup.py`). Nothing is imported or run.
 - **Publishing cannot be used to break the gate.** The upload and comment steps are `continue-on-error`; the
   gate step is independent of them.
 - Report a problem with the pipeline itself through [SECURITY.md](SECURITY.md).
@@ -361,8 +391,10 @@ its own attack surface.
   between runs. Pin a rule file in your repository for fully reproducible results.
 - Static analysis finds patterns, not logic. The remediation guide's SSRF example is a reminder that review and
   testing are still required.
-- pip-audit's resolution installs packages into a temporary environment on the runner. Requirements with build
-  dependencies or private indexes may need extra setup.
+- pip-audit resolves with wheels only: a requirement that exists only as a source package, or an editable
+  install (`-e .`), fails the step with the file's name. Private indexes may need extra setup.
+- With `scan-git-history` on, a secret anywhere in the history of any branch fails the gate until it is
+  rotated and listed in `.gitleaksignore` (see [docs/REMEDIATION.md](docs/REMEDIATION.md)).
 - Code scanning alerts require the feature to be available on the repository (free for public repositories,
   GitHub Advanced Security for private ones). Without it the SARIF upload is skipped and the report still lands
   in the summary, artifact and comment.

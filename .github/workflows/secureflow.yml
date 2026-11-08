@@ -6,6 +6,9 @@
 #       permissions: { contents: read, security-events: write, pull-requests: write }
 #       with: { fail-on: high }
 #
+# Two jobs: `secureflow` checks out and scans the code (pip-audit resolves its requirements) with a read-only
+# token and runs the gate; `publish` holds the write scopes and only uploads the SARIF and posts the comment.
+#
 name: SecureFlow
 
 on:
@@ -39,6 +42,10 @@ on:
         description: Post or update a report comment on pull requests
         type: boolean
         default: true
+      sarif-category:
+        description: Code scanning category; give each call its own when one workflow calls SecureFlow more than once
+        type: string
+        default: "secureflow"
 
 jobs:
   secureflow:
@@ -46,8 +53,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      security-events: write
-      pull-requests: write
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
     env:
       GITLEAKS_VERSION: "8.30.1"
       GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
@@ -58,7 +65,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: ${{ inputs.scan-git-history && 0 || 1 }}
+          # 0 (every branch and tag) for history scanning. Not `&& 0 || 1`: 0 is falsy, so that is always 1.
+          fetch-depth: ${{ !inputs.scan-git-history && 1 || 0 }}
+          persist-credentials: false
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -72,6 +81,7 @@ jobs:
           echo "OUT=$RUNNER_TEMP/secureflow" >> "$GITHUB_ENV"
           python -m pip install -q -U pip setuptools
           pip install -q bandit semgrep pip-audit \
+            -c "https://raw.githubusercontent.com/Leonard-Opasanjo/secureflow-devsecops/${SECUREFLOW_REF}/constraints.txt" \
             "secureflow @ git+https://github.com/Leonard-Opasanjo/secureflow-devsecops.git@${SECUREFLOW_REF}"
           mkdir -p "$RUNNER_TEMP/secureflow" "$RUNNER_TEMP/gitleaks" && cd "$RUNNER_TEMP/gitleaks"
           curl -sSL -o gitleaks.tgz \
@@ -110,6 +120,9 @@ jobs:
           fi
 
       - name: pip-audit (dependency vulnerabilities)
+        env:
+          # pip resolves the requirements; wheels only, so no setup.py from the scanned code ever runs
+          PIP_ONLY_BINARY: ":all:"
         run: |
           # shellcheck disable=SC2086  # space-separated inputs and argument lists are split on purpose
           files=$(find $SCAN_PATHS -name 'requirements*.txt' -not -path '*/.git/*' -not -path '*/.venv/*' \
@@ -134,6 +147,7 @@ jobs:
           cat secureflow-report.md >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        id: upload
         with:
           name: secureflow-report
           path: |
@@ -141,13 +155,40 @@ jobs:
             secureflow.sarif
             secureflow-findings.json
 
+      - name: Gate
+        run: secureflow gate secureflow-findings.json --fail-on "$FAIL_ON"
+
+  publish:
+    name: Publish
+    needs: secureflow
+    # After a failed gate too, so a red build still carries its report; skipped when nothing was reported.
+    if: >-
+      !cancelled() && needs.secureflow.outputs.artifact-id != '' &&
+      (inputs.upload-sarif || (inputs.comment-on-pr && github.event_name == 'pull_request'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      pull-requests: write
+    steps:
+      # The source is only read, by upload-sarif, to fingerprint each alert by the content of its line.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: inputs.upload-sarif
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.secureflow.outputs.artifact-id }}
+          path: ${{ runner.temp }}/secureflow-report
+
       - name: Publish to code scanning
         if: inputs.upload-sarif
         uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         continue-on-error: true
         with:
-          sarif_file: secureflow.sarif
-          category: secureflow
+          sarif_file: ${{ runner.temp }}/secureflow-report/secureflow.sarif
+          category: ${{ inputs.sarif-category }}
 
       - name: Comment on the pull request
         if: inputs.comment-on-pr && github.event_name == 'pull_request'
@@ -157,14 +198,13 @@ jobs:
           script: |
             const fs = require('fs');
             const marker = '<!-- secureflow-report -->';
-            let body = marker + '\n' + fs.readFileSync('secureflow-report.md', 'utf8');
+            const report = `${process.env.RUNNER_TEMP}/secureflow-report/secureflow-report.md`;
+            let body = marker + '\n' + fs.readFileSync(report, 'utf8');
             if (body.length > 60000) body = body.slice(0, 60000) + '\n\n… truncated; the full report is in the job artifact.';
             const {owner, repo} = context.repo;
             const issue_number = context.issue.number;
             const comments = await github.paginate(github.rest.issues.listComments, {owner, repo, issue_number});
-            const mine = comments.find(c => c.body && c.body.startsWith(marker));
+            // Only our own comment: anyone can post one that starts with the marker.
+            const mine = comments.find(c => c.user?.login === 'github-actions[bot]' && c.body?.startsWith(marker));
             if (mine) await github.rest.issues.updateComment({owner, repo, comment_id: mine.id, body});
             else await github.rest.issues.createComment({owner, repo, issue_number, body});
-
-      - name: Gate
-        run: secureflow gate secureflow-findings.json --fail-on "$FAIL_ON"

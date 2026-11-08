@@ -1,6 +1,9 @@
+import json
+
 import pytest
 
 from secureflow.parsers import load_json, parse_bandit, parse_gitleaks, parse_pip_audit, parse_semgrep
+from secureflow.report import dedupe, to_json, to_markdown, to_sarif
 
 
 def test_load_json_missing_or_empty_is_none(tmp_path):
@@ -75,3 +78,38 @@ def test_pip_audit_without_requirements(fixture):
     out = parse_pip_audit(fixture("pip-audit.json"))
     assert out and all(f.file == "requirements.txt" and f.line == 0 for f in out)
     assert parse_pip_audit(None) == []
+
+
+def test_bandit_keeps_hardcoded_password_value_out():
+    # Real Bandit 1.9 output shape; Bandit quotes the value in issue_text and code.
+    value = "correct-horse-battery-staple"  # gitleaks:allow (fake)
+    r = {"code": f'7 SECRET_KEY = "{value}"\n', "col_offset": 13, "end_col_offset": 43,  # gitleaks:allow
+         "filename": "./settings.py", "issue_confidence": "MEDIUM",
+         "issue_cwe": {"id": 259, "link": "https://cwe.mitre.org/data/definitions/259.html"},
+         "issue_severity": "LOW", "issue_text": f"Possible hardcoded password: '{value}'",  # gitleaks:allow
+         "line_number": 7, "line_range": [7],
+         "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b105_hardcoded_password_string.html",
+         "test_id": "B105", "test_name": "hardcoded_password_string"}
+    out = parse_bandit({"results": [r, dict(r, test_id="B106"), dict(r, test_id="B107")]})
+    assert [f.title for f in out] == ["Possible hardcoded password"] * 3
+    rendered = to_markdown(out) + json.dumps(to_sarif(out)) + to_json(out)
+    assert value not in rendered
+
+
+@pytest.mark.parametrize("level, expected", [("CRITICAL", "critical"), ("HIGH", "high"), ("ERROR", "high"),
+                                             ("MEDIUM", "medium"), ("WARNING", "medium"), ("LOW", "low"),
+                                             ("INFO", "low"), ("INVENTORY", "info"), ("SOMETHING-NEW", "high")])
+def test_semgrep_severity_levels(level, expected):
+    data = {"results": [{"check_id": "r", "path": "a.py", "start": {"line": 1},
+                         "extra": {"message": "m", "severity": level, "metadata": {}}}]}
+    assert parse_semgrep(data)[0].severity == expected
+
+
+def test_gitleaks_new_key_on_the_line_of_an_old_one_is_kept():
+    def leak(commit, entropy):
+        return {"RuleID": "generic-api-key", "File": "settings.py", "StartLine": 8, "Commit": commit,
+                "Entropy": entropy, "Match": "REDACTED", "Secret": "REDACTED"}
+    rotated_in_place = parse_gitleaks([leak("aaaaaaa", 5.22), leak("bbbbbbb", 4.87)])
+    assert len(dedupe(rotated_in_place)) == 2
+    same_key_twice = parse_gitleaks([leak("aaaaaaa", 5.22), leak("bbbbbbb", 5.22)])
+    assert len(dedupe(same_key_twice)) == 1

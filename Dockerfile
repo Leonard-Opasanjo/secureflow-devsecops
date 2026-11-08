@@ -11,7 +11,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && tar -xzf /tmp/gitleaks.tgz -C /usr/local/bin gitleaks && rm /tmp/gitleaks.tgz
 
 # Scanners first, so the heavy layer is cached across changes to the reporter
-RUN pip install --no-cache-dir bandit semgrep pip-audit
+COPY constraints.txt /opt/secureflow/
+RUN pip install --no-cache-dir -c /opt/secureflow/constraints.txt bandit semgrep pip-audit
 
 WORKDIR /opt/secureflow
 COPY pyproject.toml README.md LICENSE ./

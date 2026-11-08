@@ -8,7 +8,8 @@ Bug reports, scanner integrations and sample improvements are welcome.
 git clone https://github.com/Leonard-Opasanjo/secureflow-devsecops.git
 cd secureflow-devsecops
 python -m venv .venv && . .venv/bin/activate
-pip install -e ".[dev]"
+pip install -e ".[dev]" -c constraints.txt
+pipx install semgrep --pip-args="-c $PWD/constraints.txt"   # its own venv: semgrep pins dependencies pip-audit flags
 ```
 
 Gitleaks is a Go binary: download the release for your platform from
@@ -48,6 +49,8 @@ fixed app; update the expectations and the numbers quoted in the README.
 
 Gitleaks is pinned by version and SHA-256 in `.github/workflows/secureflow.yml`, `.github/workflows/ci.yml` and
 `Dockerfile`. Update all three together; take the checksum from the `_checksums.txt` file of the release.
+Bandit, Semgrep and pip-audit are pinned in `constraints.txt`, which the workflow, the Dockerfile and CI all
+install with `-c`; Dependabot proposes updates to it.
 
 ## Style
 

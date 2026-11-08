@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -9,6 +10,8 @@ from pathlib import Path
 from .findings import SEVERITIES, Finding
 
 _REQ_NAME = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
+# Bandit quotes the hard-coded value itself in these issue texts ("Possible hardcoded password: '<value>'").
+_BANDIT_QUOTES_VALUE = {"B105", "B106", "B107"}
 
 
 def load_json(path: str | Path):
@@ -32,8 +35,11 @@ def parse_bandit(data) -> list[Finding]:
     out = []
     for r in (data or {}).get("results", []):
         cwe = (r.get("issue_cwe") or {}).get("id")
+        text = r["issue_text"]
+        if r["test_id"] in _BANDIT_QUOTES_VALUE:
+            text = text.split(":")[0]  # keep the secret out of the report, comment and SARIF
         out.append(Finding(
-            "bandit", r["test_id"], sev.get(r.get("issue_severity", ""), "low"), _first_line(r["issue_text"]),
+            "bandit", r["test_id"], sev.get(r.get("issue_severity", ""), "low"), _first_line(text),
             r["filename"], r.get("line_number", 0),
             description=f"{r.get('test_name', '')} (confidence {r.get('issue_confidence', '?').lower()})",
             url=r.get("more_info", ""), cwe=f"CWE-{cwe}" if cwe else ""))
@@ -41,12 +47,14 @@ def parse_bandit(data) -> list[Finding]:
 
 
 def parse_semgrep(data) -> list[Finding]:
-    sev = {"ERROR": "high", "WARNING": "medium", "INFO": "low"}
+    # Legacy levels (ERROR, WARNING, INFO), the newer CRITICAL..LOW scale, and the informational rule kinds.
+    sev = {"CRITICAL": "critical", "ERROR": "high", "HIGH": "high", "WARNING": "medium", "MEDIUM": "medium",
+           "INFO": "low", "LOW": "low", "INVENTORY": "info", "EXPERIMENT": "info"}
     out = []
     for r in (data or {}).get("results", []):
         extra = r.get("extra", {})
         meta = extra.get("metadata", {}) or {}
-        severity = sev.get(str(extra.get("severity", "")).upper(), "low")
+        severity = sev.get(str(extra.get("severity", "")).upper(), "high")  # unknown level: fail closed
         if meta.get("impact") == "HIGH" and SEVERITIES.index(severity) > SEVERITIES.index("high"):
             severity = "high"  # Semgrep marks many WARNING rules as high impact; treat those as high
         cwe = meta.get("cwe") or ""
@@ -68,13 +76,16 @@ def parse_gitleaks(data) -> list[Finding]:
         commit = (leak.get("Commit") or "")[:7]
         when = (leak.get("Date") or "")[:10]
         where = f"commit {commit} on {when}" if commit else "working tree"
+        # --redact keeps Entropy, which differs between secrets: the same key in ten commits stays one finding,
+        # a new key committed on the line of an old one is a second finding.
+        key = f"gitleaks|{leak['RuleID']}|{leak['File']}|{leak.get('StartLine', 0)}|{leak.get('Entropy', '')}"
         out.append(Finding(
             "gitleaks", leak["RuleID"], "critical", leak.get("Description") or leak["RuleID"],
             leak["File"], leak.get("StartLine", 0),
             description=f"Found in {where}. Match: {leak.get('Match', '')}",
             remediation="Revoke and rotate the credential now; then remove it from history (git filter-repo) "
                         "and load it from a secret store or environment variable.",
-            cwe="CWE-798"))
+            cwe="CWE-798", fingerprint=hashlib.sha256(key.encode()).hexdigest()[:16]))
     return out
 
 

@@ -7,8 +7,22 @@ updates:
     cooldown:
       default-days: 7   # do not propose a release until it has been public for a week
   - package-ecosystem: pip
+    directory: /        # constraints.txt: the scanner versions the workflow, the image and CI install
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+  - package-ecosystem: pip
     directory: /samples/fixed-app
     schedule:
       interval: weekly
     cooldown:
       default-days: 7
+  - package-ecosystem: pip
+    directory: /samples/vulnerable-app
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    ignore:
+      - dependency-name: "*"   # vulnerable on purpose: the pipeline must keep finding these advisories

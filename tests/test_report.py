@@ -65,7 +65,9 @@ def test_sarif():
     assert res["ruleId"] == "B602" and res["level"] == "error" and res["ruleIndex"] == 0
     assert res["locations"][0]["physicalLocation"] == {"artifactLocation": {"uri": "app.py", "uriBaseId": "%SRCROOT%"},
                                                        "region": {"startLine": 47}}
-    assert res["partialFingerprints"]["secureflow/v1"] and "Remediation: use a list" in res["message"]["text"]
+    assert "Remediation: use a list" in res["message"]["text"]
+    # upload-sarif adds a line-content fingerprint; ours has the line number, so alerts would not survive shifts
+    assert all("partialFingerprints" not in r for run in doc["runs"] for r in run["results"])
     rule = bandit["tool"]["driver"]["rules"][0]
     assert rule["properties"]["security-severity"] == "8.0" and "security" in rule["properties"]["tags"]
     gl = doc["runs"][0]["tool"]["driver"]["rules"][0]
@@ -87,3 +89,14 @@ def test_json_round_trip():
     assert doc["counts"]["critical"] == 1 and doc["gate_breaches"] == 3 and doc["by_tool"]["bandit"] == 2
     back, meta = from_json(text)
     assert back == out and meta["commit"] == "abc"
+
+
+def test_markdown_shows_finding_text_as_text():
+    hostile = Finding("bandit", "B105", "low", "@octocat <img src=x> `tick` [link](https://e.x) #1 a|b", "my dir/a`b.py", 3,
+                      remediation="see <details>", cwe="CWE-259")
+    md = to_markdown([hostile], commit="abc", repo="https://github.com/o/r", tools_run=("bandit",), generated=WHEN)
+    row = next(line for line in md.splitlines() if line.startswith("| low |"))
+    assert "@\u200boctocat" in row and "#\u200b1" in row               # no mention, no issue reference
+    assert "\\<img src=x\\>" in row and "\\`tick\\`" in row and "\\[link\\](https://e.x)" in row and "a\\|b" in row
+    assert "\\<details\\>" in row
+    assert "[`` my dir/a`b.py:3 ``](https://github.com/o/r/blob/abc/my%20dir/a%60b.py#L3)" in row

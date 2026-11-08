@@ -44,13 +44,14 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _collect(args: argparse.Namespace):
-    findings, tools_run = [], []
-    if args.bandit is not None:
-        tools_run.append("bandit")
-        findings += parse_bandit(load_json(args.bandit))
-    if args.semgrep is not None:
-        tools_run.append("semgrep")
-        findings += parse_semgrep(load_json(args.semgrep))
+    findings, tools_run, errors = [], [], {}
+    for tool, path, parse in (("bandit", args.bandit, parse_bandit), ("semgrep", args.semgrep, parse_semgrep)):
+        if path is not None:
+            tools_run.append(tool)
+            data = load_json(path)
+            findings += parse(data)
+            # Bandit lists files it skipped; Semgrep's "warn" level is partial parsing, the rest of the file was scanned
+            errors[tool] = sum(e.get("level", "error") == "error" for e in (data or {}).get("errors") or [])
     if args.gitleaks:
         tools_run.append("gitleaks")
         for path in args.gitleaks:
@@ -61,14 +62,15 @@ def _collect(args: argparse.Namespace):
             path, _, req = spec.partition(":")
             findings += parse_pip_audit(load_json(path), [Path(req)] if req else [])
     order = ("gitleaks", "bandit", "semgrep", "pip-audit")
-    return dedupe(findings), tuple(t for t in order if t in tools_run)
+    return dedupe(findings), tuple(t for t in order if t in tools_run), errors
 
 
 def report(args: argparse.Namespace) -> int:
-    findings, tools_run = _collect(args)
+    findings, tools_run, errors = _collect(args)
     if not tools_run:
         raise ValueError("give at least one scanner output (--bandit, --semgrep, --gitleaks, --pip-audit)")
-    common = dict(fail_on=args.fail_on, commit=args.commit, paths=args.paths, tools_run=tools_run)
+    common = dict(fail_on=args.fail_on, commit=args.commit, paths=args.paths, tools_run=tools_run,
+                  scan_errors=errors)
     if args.markdown:
         Path(args.markdown).write_text(to_markdown(findings, title=args.title, repo=args.repo,
                                                    max_rows=args.max_rows, **common), encoding="utf-8")
@@ -82,6 +84,9 @@ def report(args: argparse.Namespace) -> int:
           + f" (tools: {', '.join(tools_run)})")
     breaches = gate(findings, args.fail_on)
     print(f"gate {args.fail_on}: " + (f"FAIL, {len(breaches)} at or above" if breaches else "PASS"))
+    for tool, n in errors.items():
+        if n:
+            print(f"warning: {tool} reported {n} error(s); a file it could not read was not scanned")
     return 0
 
 

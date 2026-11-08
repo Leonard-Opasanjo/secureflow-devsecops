@@ -14,7 +14,9 @@ else
   mkdir -p "$OUT" 2>/dev/null || { OUT="$(mktemp -d)"; echo "note: $SRC is not writable by $(id -un); writing to $OUT"; }
 fi
 cd "$SRC"   # scan with relative paths so findings and SARIF locations are repository-relative
-git config --global --add safe.directory "$SRC" >/dev/null 2>&1 || true
+# a checkout owned by another user (a container mount) needs safe.directory; add it once, not on every run
+git config --global --fixed-value --get safe.directory "$SRC" >/dev/null 2>&1 \
+  || git config --global --add safe.directory "$SRC" >/dev/null 2>&1 || true
 EXCLUDE="./.git,./.venv,./node_modules,./.secureflow,./tests,./test,*/tests/*,*/test/*"
 
 echo "== bandit";   bandit -q -r . -x "$EXCLUDE" -f json -o "$OUT/bandit.json" --exit-zero
@@ -22,12 +24,13 @@ echo "== semgrep";  args=""; for c in $SEMGREP_CONFIG; do args="$args --config $
                     SEMGREP_SEND_METRICS=off semgrep scan $args --json --output "$OUT/semgrep.json" \
                       --metrics=off --quiet --exclude .secureflow .
 echo "== gitleaks"; common="--redact --exit-code 0 --report-format json --report-path $OUT/gitleaks.json"
-                    if git rev-parse --git-dir >/dev/null 2>&1; then gitleaks git . $common
+                    # history only for a whole repository; a subdirectory gets its files, like scan-git-history: false
+                    if [ "$(git rev-parse --show-toplevel 2>/dev/null)" = "$SRC" ]; then gitleaks git . $common
                     else gitleaks dir . $common; fi
 echo "== pip-audit"; pa=""; i=0
 while IFS= read -r f; do
   i=$((i+1))
-  pip-audit -r "$f" -f json -o "$OUT/pip-audit-$i.json" >/dev/null 2>&1 || true
+  PIP_ONLY_BINARY=:all: pip-audit -r "$f" -f json -o "$OUT/pip-audit-$i.json" >/dev/null 2>&1 || true
   if [ -s "$OUT/pip-audit-$i.json" ]; then pa="$pa --pip-audit $OUT/pip-audit-$i.json:$f"
   else echo "warning: pip-audit could not audit $f"; fi
 done < <(find . -name 'requirements*.txt' -not -path '*/.git/*' -not -path '*/.venv/*' \

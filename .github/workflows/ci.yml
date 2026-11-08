@@ -27,7 +27,9 @@ jobs:
       - name: Install
         run: |
           python -m pip install -U pip setuptools
-          pip install -e ".[dev]"
+          pip install -e ".[dev]" -c constraints.txt
+          # Semgrep is a tool with its own pinned dependencies: its own venv, outside the audited environment
+          pipx install semgrep --pip-args="-c $PWD/constraints.txt"
           mkdir -p "$RUNNER_TEMP/gitleaks" && cd "$RUNNER_TEMP/gitleaks"
           curl -sSL -o gitleaks.tgz "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
           echo "${GITLEAKS_SHA256}  gitleaks.tgz" | sha256sum -c -
@@ -39,9 +41,7 @@ jobs:
       - name: Bandit on the reporter itself
         run: bandit -q -c pyproject.toml -r secureflow
       - name: Dependency audit of the reporter's environment
-        # CVE-2026-59951 is in mcp, which semgrep pins to 1.29.0 (mcp 2.x breaks semgrep). The reporter
-        # has no dependencies and the pipeline never starts semgrep's MCP server. Re-check when semgrep moves.
-        run: pip-audit --ignore-vuln CVE-2026-59951
+        run: pip-audit
 
   # Dogfooding: run the reusable pipeline on this repository. The vulnerable sample is expected to
   # produce findings, so the gate is off here; the alerts land in the Security tab as the live demo.

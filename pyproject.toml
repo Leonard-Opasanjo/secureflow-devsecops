@@ -23,7 +23,8 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.5", "bandit>=1.7", "pip-audit>=2.7", "semgrep>=1.90"]
+# Semgrep is not here: install it with pipx (see the README); its pinned dependencies would fail pip-audit.
+dev = ["pytest>=8", "ruff>=0.5", "bandit>=1.7", "pip-audit>=2.7"]
 
 [project.scripts]
 secureflow = "secureflow.cli:main"
